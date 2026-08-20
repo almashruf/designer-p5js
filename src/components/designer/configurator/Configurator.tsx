@@ -5,7 +5,13 @@ import ColorSelector from "./ColorSelector";
 import OptionGroup from "./OptionGroup";
 import DimensionSelector from "./DimensionSelector";
 import QuantitySelector from "./QuantitySelector";
-import { useDesigner } from "../state/designerStore";
+import {
+  useDesigner,
+  DEFAULT_WIDTH_CM,
+  DEFAULT_HEIGHT_CM,
+  STANDARD_WIDTHS,
+  STANDARD_HEIGHTS,
+} from "../state/designerStore";
 import { SECTION_LABEL_CLASS } from "../designerTokens";
 
 export default function Configurator() {
@@ -47,12 +53,12 @@ export default function Configurator() {
       <OptionGroup
         title="Form"
         options={[
-          { label: "Square", value: "square" },
-          { label: "Around", value: "around" },
+          { label: "Eckig", value: "eckig" },
+          { label: "Rund", value: "rund" },
         ]}
         active={config.form}
         onSelect={(value) =>
-          updateConfig({ form: value === "around" ? "around" : "square" })
+          updateConfig({ form: value === "rund" ? "rund" : "eckig" })
         }
       />
 
@@ -64,11 +70,38 @@ export default function Configurator() {
         ]}
         active={config.format}
         onSelect={(value) =>
-          updateConfig({ format: value === "wish" ? "wish" : "standard" })
+          updateConfig(
+            value === "wish"
+              ? { format: "wish" }
+              : {
+                  format: "standard",
+                  widthCm: STANDARD_WIDTHS.includes(config.widthCm)
+                    ? config.widthCm
+                    : DEFAULT_WIDTH_CM,
+                  heightCm: STANDARD_HEIGHTS.includes(config.heightCm)
+                    ? config.heightCm
+                    : DEFAULT_HEIGHT_CM,
+                },
+          )
         }
       />
 
       <DimensionSelector />
+
+      <OptionGroup
+        title="Lieferart"
+        options={[
+          { label: "Overnight", value: "overnight" },
+          { label: "Express", value: "express" },
+          { label: "Standard", value: "standard" },
+        ]}
+        active={config.delivery}
+        onSelect={(value) =>
+          updateConfig({
+            delivery: value === "overnight" ? "overnight" : value === "express" ? "express" : "standard",
+          })
+        }
+      />
 
       <QuantitySelector />
     </aside>

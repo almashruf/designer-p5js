@@ -9,6 +9,7 @@ import {
   drawDashedBoundary,
   drawObjects,
   drawProduct,
+  clipToProduct,
 } from "../canvas/designDrawing";
 import { viewport } from "../canvas/viewport";
 
@@ -62,9 +63,11 @@ export default function PreviewCanvas({ config, objects }: PreviewCanvasProps) {
         }
 
         drawProduct(p, g, cfg);
-        drawDashedBoundary(p, g);
+        drawDashedBoundary(p, g, cfg);
 
         const k = W / Math.max(1, viewport.width);
+        p.push();
+        clipToProduct(p, g, cfg);
         drawObjects(
           p,
           objectsRef.current,
@@ -72,6 +75,7 @@ export default function PreviewCanvas({ config, objects }: PreviewCanvasProps) {
           loader!,
           () => p.redraw(),
         );
+        p.pop();
       };
 
       p.windowResized = () => {

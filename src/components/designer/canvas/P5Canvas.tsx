@@ -2,17 +2,19 @@
 
 import { useEffect, useRef } from "react";
 import p5 from "p5";
-import type { DesignObject, ProductConfig } from "../state/designerStore";
+import { useDesigner, type DesignObject, type ProductConfig } from "../state/designerStore";
 import {
   P5ImageLoader,
   computeGeometry,
   drawDashedBoundary,
   drawObjects,
   drawProduct,
+  clipToProduct,
 } from "./designDrawing";
 import { drawMeasurementLines } from "./MeasurementLines";
 import { updateViewport } from "./viewport";
-import { registerCapture, unregisterCapture } from "./canvasRegistry";
+import { registerCapture, unregisterCapture, type CaptureMode } from "./canvasRegistry";
+import { downloadPng8, downloadSvg, downloadProof } from "./exports";
 
 const COLORS = {
   productBorder: "#111827",
@@ -26,6 +28,7 @@ interface P5CanvasProps {
   config: ProductConfig;
   objects: DesignObject[];
   onObjectsChange: (objects: DesignObject[]) => void;
+  showToast: (message: string) => void;
 }
 
 type InteractionMode = "none" | "drag" | "resize" | "rotate";
@@ -34,6 +37,7 @@ export default function P5Canvas({
   config,
   objects,
   onObjectsChange,
+  showToast,
 }: P5CanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const p5InstanceRef = useRef<p5 | null>(null);
@@ -42,6 +46,7 @@ export default function P5Canvas({
   const selectionRef = useRef<string | null>(null);
   const loaderRef = useRef<P5ImageLoader | null>(null);
   const onObjectsChangeRef = useRef(onObjectsChange);
+  const showToastRef = useRef(showToast);
   const interactionRef = useRef<{
     mode: InteractionMode;
     offsetX: number;
@@ -58,10 +63,35 @@ export default function P5Canvas({
     startRotation: 0,
   });
   const geometryRef = useRef({ centerX: 0, centerY: 0 });
+  const { undo, redo, selectObject, selectedId } = useDesigner();
+  const undoRef = useRef(undo);
+  const redoRef = useRef(redo);
+  const selectObjectRef = useRef(selectObject);
+
+  useEffect(() => {
+    undoRef.current = undo;
+  }, [undo]);
+
+  useEffect(() => {
+    redoRef.current = redo;
+  }, [redo]);
+
+  useEffect(() => {
+    selectObjectRef.current = selectObject;
+  }, [selectObject]);
+
+  useEffect(() => {
+    selectionRef.current = selectedId;
+    p5InstanceRef.current?.redraw();
+  }, [selectedId]);
 
   useEffect(() => {
     onObjectsChangeRef.current = onObjectsChange;
   }, [onObjectsChange]);
+
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
 
   useEffect(() => {
     configRef.current = config;
@@ -96,9 +126,18 @@ export default function P5Canvas({
         y: geometryRef.current.centerY + obj.y,
       });
 
+      const ROUNDED_TYPES = new Set<DesignObject["type"]>([
+        "circle",
+        "star",
+        "heart",
+        "bolt",
+        "moon",
+      ]);
+
       const hitTestObject = (wx: number, wy: number): DesignObject | null => {
         for (let i = objectsRef.current.length - 1; i >= 0; i--) {
           const obj = objectsRef.current[i];
+          if (obj.visible === false) continue;
           const pos = worldOf(obj);
           const dx = wx - pos.x;
           const dy = wy - pos.y;
@@ -107,9 +146,11 @@ export default function P5Canvas({
           const lx = dx * cos - dy * sin;
           const ly = dx * sin + dy * cos;
           let inside: boolean;
-          if (obj.type === "circle" || obj.type === "star") {
+          if (obj.type === "circle") {
             const r = Math.min(obj.width, obj.height) / 2;
             inside = Math.hypot(lx, ly) <= r;
+          } else if (ROUNDED_TYPES.has(obj.type)) {
+            inside = Math.abs(lx) <= obj.width / 2 && Math.abs(ly) <= obj.height / 2;
           } else {
             inside = Math.abs(lx) <= obj.width / 2 && Math.abs(ly) <= obj.height / 2;
           }
@@ -161,7 +202,7 @@ export default function P5Canvas({
 
       const drawNoElementsBox = () => {
         if (objectsRef.current.length > 0) return;
-        const boxWidth = 104;
+        const boxWidth = 140;
         const boxHeight = 30;
         const boxX = p.width - boxWidth / 2 - 18;
         const boxY = boxHeight / 2 + 18;
@@ -209,10 +250,18 @@ export default function P5Canvas({
         p.translate(-W / 2, -H / 2);
 
         drawProduct(p, g, cfg);
-        drawDashedBoundary(p, g);
-        drawObjects(p, objectsRef.current, { centerX: g.centerX, centerY: g.centerY, scale: 1 }, loaderRef.current!, () =>
-          p.redraw(),
+        drawDashedBoundary(p, g, cfg);
+
+        p.push();
+        clipToProduct(p, g, cfg);
+        drawObjects(
+          p,
+          objectsRef.current,
+          { centerX: g.centerX, centerY: g.centerY, scale: 1 },
+          loaderRef.current!,
+          () => p.redraw(),
         );
+        p.pop();
 
         const selected = getSelected();
         if (selected) drawSelection(selected);
@@ -250,12 +299,12 @@ export default function P5Canvas({
 
         if (selected) {
           const handles = handlePositions(selected);
-          if (dist(world.x, world.y, handles.rotate.x, handles.rotate.y) < 14) {
+          if (dist(world.x, world.y, handles.rotate.x, handles.rotate.y) < 18) {
             interaction.mode = "rotate";
             interaction.startRotation = selected.rotation;
             return;
           }
-          if (dist(world.x, world.y, handles.corner.x, handles.corner.y) < 14) {
+          if (dist(world.x, world.y, handles.corner.x, handles.corner.y) < 18) {
             interaction.mode = "resize";
             interaction.startWidth = selected.width;
             interaction.startHeight = selected.height;
@@ -266,6 +315,7 @@ export default function P5Canvas({
         const hit = hitTestObject(world.x, world.y);
         if (hit) {
           selectionRef.current = hit.id;
+          selectObjectRef.current(hit.id);
           interaction.mode = "drag";
           const pos = worldOf(hit);
           interaction.offsetX = world.x - pos.x;
@@ -275,6 +325,7 @@ export default function P5Canvas({
         }
 
         selectionRef.current = null;
+        selectObjectRef.current(null);
         interaction.mode = "none";
         p.redraw();
       };
@@ -313,8 +364,18 @@ export default function P5Canvas({
         }
       };
 
-      p.doubleClicked = () => {
-        const world = toWorld(p.mouseX, p.mouseY);
+      p.doubleClicked = (event?: MouseEvent) => {
+        let mx = p.mouseX;
+        let my = p.mouseY;
+        if (event && p.drawingContext) {
+          const canvasEl = p.drawingContext.canvas as HTMLCanvasElement;
+          const rect = canvasEl.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            mx = ((event.clientX - rect.left) * p.width) / rect.width;
+            my = ((event.clientY - rect.top) * p.height) / rect.height;
+          }
+        }
+        const world = toWorld(mx, my);
         const hit = hitTestObject(world.x, world.y);
         if (hit) {
           onObjectsChangeRef.current(
@@ -322,6 +383,7 @@ export default function P5Canvas({
               o.id === hit.id ? { ...o, rotation: 0 } : o,
             ),
           );
+          showToastRef.current("Rotation reset");
         }
       };
     };
@@ -342,6 +404,31 @@ export default function P5Canvas({
     observer.observe(container);
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isField =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "SELECT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (isField) return;
+
+      const mod = event.ctrlKey || event.metaKey;
+
+      if (mod && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoRef.current();
+        return;
+      }
+      if (
+        (mod && event.key.toLowerCase() === "y") ||
+        (mod && event.shiftKey && event.key.toLowerCase() === "z")
+      ) {
+        event.preventDefault();
+        redoRef.current();
+        return;
+      }
+
       if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selectionRef.current
@@ -353,19 +440,33 @@ export default function P5Canvas({
         selectionRef.current = null;
         onObjectsChangeRef.current(remaining.map((o) => ({ ...o })));
         instance.redraw();
+        showToastRef.current("Element deleted");
       }
       if (event.key === "Escape") {
         selectionRef.current = null;
+        selectObjectRef.current(null);
         instance.redraw();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
 
-    registerCapture(() => {
+    registerCapture((mode: CaptureMode) => {
       const canvasEl = instance.drawingContext?.canvas as
         | HTMLCanvasElement
         | undefined;
       if (!canvasEl) return;
+      if (mode === "svg") {
+        downloadSvg(configRef.current, objectsRef.current);
+        return;
+      }
+      if (mode === "proof") {
+        downloadProof(canvasEl, configRef.current);
+        return;
+      }
+      if (mode === "png8") {
+        downloadPng8(canvasEl, configRef.current, objectsRef.current);
+        return;
+      }
       const link = document.createElement("a");
       link.download = `design-${Date.now()}.png`;
       link.href = canvasEl.toDataURL("image/png");
